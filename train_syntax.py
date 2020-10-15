@@ -11,7 +11,7 @@ from utils import get_mask_from_index,seed_everything
 from evaluate2 import Eval
 from config import get_opt
 from data_process2 import DataConfig
-from model_syntax import Model
+from model_syntax2 import Model
 
 
 def evaluate(opt, model, dataset, best_metrics=None, show_case=False):
