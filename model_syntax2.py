@@ -14,10 +14,10 @@ class Mlp(nn.Module):
     def __init__(self, input_size, output_size):
         super(Mlp, self).__init__()
         self.linear = nn.Sequential(
-            nn.Linear(input_size, input_size // 2),
+            nn.Linear(input_size, input_size),
             nn.Dropout(0.5),
             nn.ReLU(inplace=True),
-            nn.Linear(input_size // 2, output_size),
+            nn.Linear(input_size, output_size),
         )
 
     def forward(self, x):
@@ -121,7 +121,8 @@ class Encoder(nn.Module):
         self.opt =opt
         self.hidden_size = opt.rnn_hidden_size
         self.emb_size = opt.encoder_emb_size
-        self.rnn_input_size = opt.rnn_emb_size
+        self.rnn_input_size = self.emb_size*3+opt.pos_emb_size+opt.token_type_emb_size+\
+                              opt.sent_emb_size+opt.rel_emb_size
         self.word_number = config.word_number
         self.lemma_number = config.lemma_number
         self.maxlen = opt.maxlen
@@ -138,8 +139,8 @@ class Encoder(nn.Module):
         self.token_type_embedding = nn.Embedding(2, opt.token_type_emb_size)
         self.cell_name = opt.cell_name
 
-        self.embedded_linear = nn.Linear(self.emb_size*2+opt.pos_emb_size+opt.token_type_emb_size+opt.sent_emb_size,
-                                         self.rnn_input_size)
+        # self.embedded_linear = nn.Linear(self.emb_size*2+opt.pos_emb_size+opt.token_type_emb_size+opt.sent_emb_size,
+        #                                 self.rnn_input_size)
         self.syntax_embedded_linear = nn.Linear(self.emb_size*2+opt.rel_emb_size+opt.token_type_emb_size,
                                          self.rnn_input_size)
         # self.output_combine_linear = nn.Linear(4*self.hidden_size, 2*self.hidden_size)
@@ -151,13 +152,13 @@ class Encoder(nn.Module):
         if self.cell_name == 'gru':
             self.rnn = nn.GRU(self.rnn_input_size, self.hidden_size,num_layers=self.opt.num_layers,
                               dropout=self.dropout,bidirectional=True, batch_first=True)
-            self.syntax_rnn = nn.GRU(self.rnn_input_size, self.hidden_size,num_layers=self.opt.num_layers,
-                              dropout=self.dropout,bidirectional=True, batch_first=True)
+            # self.syntax_rnn = nn.GRU(self.rnn_input_size, self.hidden_size,num_layers=self.opt.num_layers,
+            #                   dropout=self.dropout,bidirectional=True, batch_first=True)
         elif self.cell_name == 'lstm':
             self.rnn = nn.LSTM(self.rnn_input_size, self.hidden_size,num_layers=self.opt.num_layers,
                                dropout=self.dropout,bidirectional=True, batch_first=True)
-            self.syntax_rnn = nn.LSTM(self.rnn_input_size, self.hidden_size,num_layers=self.opt.num_layers,
-                               dropout=self.dropout,bidirectional=True, batch_first=True)
+            # self.syntax_rnn = nn.LSTM(self.rnn_input_size, self.hidden_size,num_layers=self.opt.num_layers,
+            #                    dropout=self.dropout,bidirectional=True, batch_first=True)
         else:
             print('cell_name error')
 
@@ -176,12 +177,12 @@ class Encoder(nn.Module):
         sent_embedded = self.cnn(embedded)
 
         sent_embedded = sent_embedded.expand([self.opt.maxlen, self.opt.batch_size, self.opt.sent_emb_size]).permute(1, 0, 2)
-        embedded = torch.cat([embedded, sent_embedded], dim=-1)
-        embedded = self.embedded_linear(embedded)
+        embedded = torch.cat([embedded,sent_embedded,head_embedded,rel_embedded], dim=-1)
+        #embedded = self.embedded_linear(embedded)
 
         # syntax embedding
-        syntax_embedded = torch.cat([word_embedded,head_embedded,rel_embedded,token_type_ids],dim=-1)
-        syntax_embedded = self.syntax_embedded_linear(syntax_embedded)
+        # syntax_embedded = torch.cat([word_embedded,head_embedded,rel_embedded,token_type_ids],dim=-1)
+        # syntax_embedded = self.syntax_embedded_linear(syntax_embedded)
 
         lengths=lengths.squeeze()
         # sorted before pack
@@ -190,44 +191,43 @@ class Encoder(nn.Module):
         perm_idx_inv = generate_perm_inv(perm_idx)
 
         embedded = embedded[perm_idx]
-        syntax_embedded = syntax_embedded[perm_idx]
+        # syntax_embedded = syntax_embedded[perm_idx]
 
         if lengths is not None:
             rnn_input = nn.utils.rnn.pack_padded_sequence(embedded, lengths=lengths[perm_idx],
                                                           batch_first=True)
-            syntax_rnn_input =  nn.utils.rnn.pack_padded_sequence(syntax_embedded, lengths=lengths[perm_idx],
-                                                          batch_first=True)
+            # syntax_rnn_input =  nn.utils.rnn.pack_padded_sequence(syntax_embedded, lengths=lengths[perm_idx],
+            #                                               batch_first=True)
         output, hidden = self.rnn(rnn_input)
-        syntax_output, syntax_hidden = self.rnn(syntax_rnn_input)
+        #syntax_output, syntax_hidden = self.rnn(syntax_rnn_input)
 
         if lengths is not None:
             output, _ = nn.utils.rnn.pad_packed_sequence(output, total_length=self.maxlen, batch_first=True)
-            syntax_output, _ = nn.utils.rnn.pad_packed_sequence(syntax_output, total_length=self.maxlen, batch_first=True)
+            # syntax_output, _ = nn.utils.rnn.pad_packed_sequence(syntax_output, total_length=self.maxlen, batch_first=True)
 
 
         # print(output.size())
         # print(hidden.size())
 
         output = output[perm_idx_inv]
-        syntax_output = syntax_output[perm_idx_inv]
+        # syntax_output = syntax_output[perm_idx_inv]
 
         if self.cell_name == 'gru':
             hidden = hidden[:, perm_idx_inv]
             hidden = (lambda a: sum(a)/(2*self.opt.num_layers))(torch.split(hidden, 1, dim=0))
 
-            syntax_hidden = syntax_hidden[:, perm_idx_inv]
-            syntax_hidden = (lambda a: sum(a)/(2*self.opt.num_layers))(torch.split(syntax_hidden, 1, dim=0))
-            hidden = (hidden + syntax_hidden) / 2
+            # syntax_hidden = syntax_hidden[:, perm_idx_inv]
+            # syntax_hidden = (lambda a: sum(a)/(2*self.opt.num_layers))(torch.split(syntax_hidden, 1, dim=0))
+            # hidden = (hidden + syntax_hidden) / 2
 
         elif self.cell_name == 'lstm':
             hn0 = hidden[0][:, perm_idx_inv]
             hn1 = hidden[1][:, perm_idx_inv]
-            sy_hn0 = syntax_hidden[0][:, perm_idx_inv]
-            sy_hn1 = syntax_hidden[1][:, perm_idx_inv]
-            hn  = tuple([(hn0+sy_hn0)/2,(hn1+sy_hn1)/2])
+            # sy_hn0 = syntax_hidden[0][:, perm_idx_inv]
+            # sy_hn1 = syntax_hidden[1][:, perm_idx_inv]
+            hn  = tuple([hn0,hn1])
             hidden = tuple(map(lambda state: sum(torch.split(state, 1, dim=0))/(2*self.opt.num_layers), hn))
 
-        output =(output+syntax_output)/2
 
         target_state_head = batched_index_select(target=output, indices=frame_idx[0])
         target_state_tail = batched_index_select(target=output, indices=frame_idx[1])
@@ -265,15 +265,15 @@ class Decoder(nn.Module):
         # decoder _init_
         self.decodelen = opt.fe_padding_num+1
         self.frame_embedding = nn.Embedding(opt.frame_number+1, self.emb_size)
-        self.frame_fc_layer =nn.Linear(self.emb_size, opt.frame_number+1)
+        self.frame_fc_layer =Mlp(self.emb_size, opt.frame_number+1)
         self.role_embedding = nn.Embedding(opt.role_number+1, self.emb_size)
         self.role_feature_layer = nn.Linear(2*self.emb_size, self.emb_size)
-        self.role_fc_layer = nn.Linear(self.hidden_size, opt.role_number+1)
+        self.role_fc_layer = nn.Linear(self.hidden_size+self.emb_size, opt.role_number+1)
 
         self.head_fc_layer = Mlp(self.hidden_size+self.emb_size, self.hidden_size)
         self.tail_fc_layer = Mlp(self.hidden_size+self.emb_size, self.hidden_size)
 
-        self.span_fc_layer = nn.Linear(4 * self.encoder_hidden_size + self.emb_size, self.emb_size)
+        self.span_fc_layer = Mlp(4 * self.encoder_hidden_size + self.emb_size, self.emb_size)
 
         self.next_input_fc_layer = Mlp(self.hidden_size+self.emb_size, self.emb_size)
         
@@ -378,19 +378,19 @@ class Decoder(nn.Module):
 
             tail_target = batched_index_select(target=encoder_output, indices=tail_indices.squeeze())
 
-            head_context =local_attention(attention_mask=attention_mask, hidden_state=encoder_output,
-                                          frame_idx=(head_indices, tail_indices), target_state=head_target,
-                                          window_size=0, max_len=self.opt.maxlen)
+            # head_context =local_attention(attention_mask=attention_mask, hidden_state=encoder_output,
+            #                               frame_idx=(head_indices, tail_indices), target_state=head_target,
+            #                               window_size=0, max_len=self.opt.maxlen)
+            #
+            # tail_context =local_attention(attention_mask=attention_mask, hidden_state=encoder_output,
+            #                               frame_idx=(head_indices, tail_indices), target_state=tail_target,
+            #                               window_size=0, max_len=self.opt.maxlen)
 
-            tail_context =local_attention(attention_mask=attention_mask, hidden_state=encoder_output,
-                                          frame_idx=(head_indices, tail_indices), target_state=tail_target,
-                                          window_size=0, max_len=self.opt.maxlen)
-
-            span_input = self.span_fc_layer(torch.cat([head_context, tail_context, frame_emb], dim=-1)).unsqueeze(1)
+            span_input = self.span_fc_layer(torch.cat([head_target+tail_target, head_target-tail_target, frame_emb], dim=-1)).unsqueeze(1)
 
             output,role_decoder_state = self.decode_step(self.role_rnn, input=span_input,
                                                          decoder_state=role_decoder_state)
-            role_target = self.role_fc_layer(output)
+            role_target = self.role_fc_layer(torch.cat([output,span_input],dim=-1))
             role_target_masked = role_target.squeeze().clone().detach()
             if fe_mask is not None :
                 FE_mask = 1-fe_mask
