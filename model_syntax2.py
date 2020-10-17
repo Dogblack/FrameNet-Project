@@ -15,7 +15,7 @@ class Mlp(nn.Module):
         super(Mlp, self).__init__()
         self.linear = nn.Sequential(
             nn.Linear(input_size, input_size),
-            nn.Dropout(0.5),
+            nn.Dropout(0.4),
             nn.ReLU(inplace=True),
             nn.Linear(input_size, output_size),
         )
@@ -30,7 +30,7 @@ class Relu_Linear(nn.Module):
         super(Relu_Linear, self).__init__()
         self.linear = nn.Sequential(
             nn.Linear(input_size, output_size),
-            nn.Dropout(0.5),
+            nn.Dropout(0.4),
             nn.ReLU(inplace=True),
         )
 
@@ -65,9 +65,9 @@ class PointerNet(nn.Module):
 
         assert attention_type in ('affine', 'dot_prod')
         if attention_type == 'affine':
-            self.src_encoding_linear = nn.Linear(src_encoding_size, query_vec_size, bias=True)
+            self.src_encoding_linear = Mlp(src_encoding_size, query_vec_size)
 
-        self.src_linear = nn.Linear(src_encoding_size,src_encoding_size,bias=True)
+        self.src_linear = Mlp(src_encoding_size,src_encoding_size)
         self.activate = nn.ReLU(inplace=True)
         self.dropout = nn.Dropout(0.5)
 
@@ -84,28 +84,29 @@ class PointerNet(nn.Module):
 
         # (batch_size, tgt_action_num, query_vec_size, 1)
         if head_vec is not None:
-            q_h = head_vec.permute(1, 0, 2).unsqueeze(3)
-            q = query_vec.permute(1, 0, 2).unsqueeze(3)
+            src_encod = torch.cat([src_encod,head_weights],dim = -1)
+            q = torch.cat([head_vec, query_vec], dim=-1).permute(1, 0, 2).unsqueeze(3)
+
 
         else:
             q = query_vec.permute(1, 0, 2).unsqueeze(3)
 
         weights = torch.matmul(src_encod, q).squeeze(3)
-        weights = weights.permute(1, 0, 2)
+        ptr_weights = weights.permute(1, 0, 2)
 
-        if head_vec is not None:
-            src_weights = torch.matmul(head_weights, q_h).squeeze(3)
-            src_weights = src_weights.permute(1, 0, 2)
-            ptr_weights = weights+src_weights
-
-        else:
-            ptr_weights = weights
+        # if head_vec is not None:
+        #     src_weights = torch.matmul(head_weights, q_h).squeeze(3)
+        #     src_weights = src_weights.permute(1, 0, 2)
+        #     ptr_weights = weights+src_weights
+        #
+        # else:
+        #    ptr_weights = weights
 
         ptr_weights_masked = ptr_weights.clone().detach()
         if src_token_mask is not None:
             # (tgt_action_num, batch_size, src_sent_len)
             src_token_mask=1-src_token_mask.byte()
-            src_token_mask = src_token_mask.unsqueeze(0).expand_as(weights)
+            src_token_mask = src_token_mask.unsqueeze(0).expand_as(ptr_weights)
             # ptr_weights.data.masked_fill_(src_token_mask, -float('inf'))
             ptr_weights_masked.data.masked_fill_(src_token_mask, -float('inf'))
 
@@ -128,7 +129,7 @@ class Encoder(nn.Module):
         self.maxlen = opt.maxlen
 
         self.cnn = CnnNet(opt.kernel_size, seq_length=opt.maxlen,
-                          input_size=self.emb_size*2+opt.pos_emb_size+opt.token_type_emb_size,
+                          input_size=self.emb_size*3+opt.pos_emb_size+opt.token_type_emb_size+opt.rel_emb_size,
                           output_size=opt.sent_emb_size)
 
         self.dropout = 0.2
@@ -173,11 +174,11 @@ class Encoder(nn.Module):
         rel_embedded = self.rel_embedding(rel_input)
         token_type_ids = self.token_type_embedding(token_type_ids)
 
-        embedded = torch.cat([word_embedded, lemma_embedded, pos_embedded,token_type_ids], dim=-1)
+        embedded = torch.cat([word_embedded, lemma_embedded, pos_embedded,head_embedded,rel_embedded,token_type_ids], dim=-1)
         sent_embedded = self.cnn(embedded)
 
         sent_embedded = sent_embedded.expand([self.opt.maxlen, self.opt.batch_size, self.opt.sent_emb_size]).permute(1, 0, 2)
-        embedded = torch.cat([embedded,sent_embedded,head_embedded,rel_embedded], dim=-1)
+        embedded = torch.cat([embedded,sent_embedded], dim=-1)
         #embedded = self.embedded_linear(embedded)
 
         # syntax embedding
